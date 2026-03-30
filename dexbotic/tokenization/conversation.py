@@ -10,6 +10,7 @@ class SeparatorStyle(Enum):
     TWO = auto()
     PLAIN = auto()
     LLAMA_3 = auto()
+    CHATML = auto()
 
 
 class KeywordsStoppingCriteria(StoppingCriteria):
@@ -102,6 +103,15 @@ class Conversation:
                     ret += role + message + sep
                 else:
                     ret += role
+        elif self.sep_style == SeparatorStyle.CHATML:
+            ret = "" if self.system == "" else self.system + self.sep + "\n"
+            for role, message in self.messages:
+                if message:
+                    if isinstance(message, tuple):
+                        message, _, _ = message
+                    ret += role + "\n" + message + self.sep + "\n"
+                else:
+                    ret += role + "\n"
         else:
             raise ValueError(f"Invalid style: {self.sep_style}")
 
@@ -226,8 +236,21 @@ llama_3_chat = Conversation(
     sep2="<|end_of_text|>",
 )
 
+
+conv_qwen2 = Conversation(
+    system="<|im_start|>system\nYou are a helpful assistant.",
+    roles=("<|im_start|>user", "<|im_start|>assistant"),
+    version="qwen2",
+    messages=(),
+    offset=0,
+    sep_style=SeparatorStyle.CHATML,
+    sep="<|im_end|>",
+    sep2="<|im_end|>",
+)
+
 conv_templates = {
     "dexbotic": conv_dexbotic,
     "step": conv_step,
     "llama_3": llama_3_chat,
+    "qwen2-chat": conv_qwen2,
 }

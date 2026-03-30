@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import transformers
 
-from dexbotic.constants import DEFAULT_IMAGE_TOKEN, IGNORE_INDEX
+from dexbotic.constants import DEFAULT_IMAGE_TOKEN, IGNORE_INDEX, IMAGE_TOKEN_INDEX
 from dexbotic.data.dataset.tokenization import Tokenization
 from dexbotic.tokenization import conversation as conversation_lib
 from dexbotic.tokenization import tokenization as tokenization_lib
@@ -297,3 +297,74 @@ class DM0Tokenization(Tokenization):
             "ar_mask": np.asarray(ar_mask),
             "loss_mask": np.asarray(loss_mask),
         }
+
+class GR00TN1Tokenization(Tokenization):
+    def __init__(self, tokenizer, data_args):
+        self.tokenizer = tokenizer
+        self.data_args = data_args
+
+    @staticmethod
+    def tokenizer_image_token(
+        prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None
+    ):
+        # 以<image>为锚点split prompt
+        prompt_chunks = [
+            tokenizer(chunk).input_ids for chunk in prompt.split("<image>")
+        ]
+
+        def insert_separator(X, sep):
+            return [ele for sublist in zip(X, [sep] * len(X)) for ele in sublist][:-1]
+
+        input_ids = []
+        offset = 0
+
+        for x in insert_separator(prompt_chunks, [image_token_index] * (offset + 1)):
+            input_ids.extend(x[offset:])
+
+        if return_tensors is not None:
+            if return_tensors == "pt":
+                return torch.tensor(input_ids, dtype=torch.long)
+            raise ValueError(f"Unsupported tensor type: {return_tensors}")
+        return input_ids
+
+    def __call__(self, conversations: List[Dict], has_image: bool) -> Dict:
+        conv = conversation_lib.conv_templates[self.data_args.chat_template].copy()
+        roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
+
+        # Apply prompt templates - this part is correct (lines 144-155)
+        sources = [conversations]
+        conversations = []
+        for i, source in enumerate(sources):
+            if roles[source[0]["from"]] != conv.roles[0]:
+                # Skip the first one if it is not from human
+                source = source[1:]
+
+            conv.messages = []
+            for j, sentence in enumerate(source):
+                role = roles[sentence["from"]]
+                assert role == conv.roles[j % 2], f"{i}"
+                conv.append_message(role, sentence["value"])
+            conversations.append(conv.get_prompt())
+
+        if has_image:
+            input_ids = torch.stack(
+                [
+                    self.tokenizer_image_token(
+                        prompt, self.tokenizer, return_tensors="pt"
+                    )
+                    for prompt in conversations
+                ],
+                dim=0,
+            )
+        else:
+            input_ids = self.tokenizer(
+                conversations,
+                return_tensors="pt",
+                padding="longest",
+                max_length=self.tokenizer.model_max_length,
+                truncation=True,
+            ).input_ids
+        labels = torch.full_like(input_ids, IGNORE_INDEX)
+        data_dict = dict(input_ids=input_ids[0], labels=labels[0])
+
+        return data_dict

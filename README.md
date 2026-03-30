@@ -105,6 +105,7 @@ The following shows a comparison of evaluation results between models trained wi
 | DB-π0 | 93.9 | 97 | 98.2 | 94 | 86.4 |
 | MemVLA | 96.7 | 98.4 | 98.4 | 96.4 | 93.4 |
 | DB-MemVLA | 97.0 | 97.2 | 99.2 | 98.4 | 93.2 |
+| DB-GR00TN1 | 94.8 | 93.0 | 99.6 | 95.2 | 91.4 | 
 
 ### CALVIN
 

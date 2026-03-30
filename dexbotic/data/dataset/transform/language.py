@@ -27,6 +27,75 @@ class AddPromptTemplate:
         return episode_data_dict
 
 
+class InsertImageTokenPrefix:
+    def __init__(self, num_images: int = 1):
+        self.num_images = num_images
+
+    def __call__(self, episode_data_dict: dict, **kwargs) -> dict:
+        IMG_START_TOKEN = "<img>"
+        IMG_END_TOKEN = "</img>"
+        prefix = ""
+        if self.num_images == 1:
+            prefix = "<image>\n"
+        else:
+            for idx in range(self.num_images):
+                prefix = (
+                    prefix
+                    + f"<image {idx + 1}>{IMG_START_TOKEN}<image>{IMG_END_TOKEN}\n"
+                )
+
+        episode_data_dict["prompt"] = [
+            prefix + prompt for prompt in episode_data_dict["prompt"]
+        ]
+        return episode_data_dict
+
+
+class InsertImageTokenPostfix:
+    def __init__(self, num_images: int = 1):
+        self.num_images = num_images
+
+    def __call__(self, episode_data_dict: dict, **kwargs) -> dict:
+        IMG_START_TOKEN = "<img>"
+        IMG_END_TOKEN = "</img>"
+        postfix = ""
+        if self.num_images == 1:
+            postfix = "</image>\n"
+        else:
+            for idx in range(self.num_images):
+                postfix = (
+                    postfix
+                    + f"<image {idx + 1}>{IMG_START_TOKEN}<image>{IMG_END_TOKEN}"
+                )
+
+        episode_data_dict["prompt"] = [
+            prompt + postfix for prompt in episode_data_dict["prompt"]
+        ]
+        return episode_data_dict
+
+
+class BuildConversationRoleContent:
+    def __init__(self, prompt_key: str = "prompt"):
+        self.prompt_key = prompt_key
+
+    def __call__(self, episode_data_dict: dict, **kwargs) -> dict:
+        prompt = episode_data_dict.get(self.prompt_key, "")
+
+        def build_conv(text: str):
+            return [
+                {
+                    "from": "human",
+                    "value": text,
+                }
+            ]
+
+        if isinstance(prompt, list):
+            episode_data_dict["conversations"] = [build_conv(p) for p in prompt]
+        else:
+            episode_data_dict["conversations"] = build_conv(prompt)
+
+        return episode_data_dict
+
+
 class ReplaceAnswer:
     """Replace the `answer` in the episode_data_dict with a default string"""
 
