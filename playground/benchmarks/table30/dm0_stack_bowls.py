@@ -47,7 +47,7 @@ def parse_args():
         "--task",
         type=str,
         default="train",
-        choices=["train", "inference", "compute_norm_stats"],
+        choices=["train", "inference"],
     )
     args, unknown = parser.parse_known_args()
     return args
@@ -148,7 +148,7 @@ class DM0DataConfig(_DM0DataConfig):
 @dataclass
 class DM0ModelConfig(_DM0ModelConfig):
     model_name_or_path: str = field(
-        default="./checkpoints/Dexbotic-DM0"
+        default="./checkpoints/DM0-base"
     )
 
     def build_model(self) -> DM0ForCausalLM:
@@ -220,9 +220,6 @@ class DM0Exp(_DM0Exp):
     tokenizer_config: DM0TokenizerConfig = field(default_factory=DM0TokenizerConfig)
     inference_config: DM0InferenceConfig = field(default_factory=DM0InferenceConfig)
 
-    def inference(self) -> None:
-        self.inference_config.run()
-
     def compute_norm_stats(self) -> None:
         self.data_config.action_config = DM0ComputeNormActionConfig()
         self.data_config.action_config.compute_norm_stats(self.data_config.dataset_name)
@@ -268,5 +265,3 @@ if __name__ == "__main__":
         exp.train()
     elif args.task == "inference":
         exp.inference()
-    elif args.task == "compute_norm_stats":
-        exp.compute_norm_stats()
