@@ -1,12 +1,28 @@
-from typing import Dict, List, Sequence
+import copy
+import random
+from typing import Any, Dict, List, Sequence
 
 import numpy as np
 import torch
 import transformers
 
-from dexbotic.constants import DEFAULT_IMAGE_TOKEN, IGNORE_INDEX, IMAGE_TOKEN_INDEX
+from dexbotic.constants import (
+    DEFAULT_IMAGE_TOKEN,
+    IGNORE_INDEX,
+    IMAGE_TOKEN_INDEX,
+)
+from dexbotic.model.uninavid.constants import (
+    IMAGE_SEPARATOR,
+    IMAGE_END_TOKEN,
+    IMAGE_START_TOKEN,
+    NAVIGATION_IDENTIFIER,
+    NAVIGATION_SPECIAL_TOKEN,
+    VIDEO_END_SPECIAL_TOKEN,
+    VIDEO_START_SPECIAL_TOKEN,
+)
 from dexbotic.data.dataset.tokenization import Tokenization
 from dexbotic.tokenization import conversation as conversation_lib
+from dexbotic.tokenization.tokenization import tokenizer_image_token
 from dexbotic.tokenization import tokenization as tokenization_lib
 
 
@@ -112,6 +128,174 @@ class NaVILATokenization(Tokenization):
             labels[input_ids == pad_token_id] = IGNORE_INDEX
 
         return {"input_ids": input_ids, "labels": labels}
+
+
+class UniNaVidTokenization(Tokenization):
+    """Imgsp supervision batching with video special tokens; used by ``DexUniNaVidDataset``."""
+
+    def __init__(self, tokenizer, data_args):
+        self.tokenizer = tokenizer
+        self.data_args = data_args
+
+    def __call__(self, conversations: List[Dict], has_image: bool) -> Dict:
+        sources = [copy.deepcopy(conversations)]
+        mm_sources = self._format_multimodal_sources(sources, self.data_args)
+        full = self._build_imgsp_supervised_batch(
+            mm_sources,
+            self.tokenizer,
+            has_image=has_image,
+        )
+        data_dict = {
+            "input_ids": full["input_ids"][0],
+            "labels": full["labels"][0],
+        }
+        if "prompt" in full and full["prompt"] is not None:
+            data_dict["prompt"] = full["prompt"]
+        return data_dict
+
+    @staticmethod
+    def _format_multimodal_sources(sources: Sequence, data_args: Any):
+        """Normalize `<image>` placeholders for imgsp-style multimodal prompts."""
+        if not data_args.is_multimodal:
+            return sources
+
+        for source in sources:
+            for sentence in source:
+                if DEFAULT_IMAGE_TOKEN not in sentence["value"]:
+                    continue
+                text = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "").strip()
+                sentence["value"] = (DEFAULT_IMAGE_TOKEN + "\n" + text).strip()
+
+        return sources
+
+    @staticmethod
+    def _build_imgsp_supervised_batch(
+        sources,
+        tokenizer: transformers.PreTrainedTokenizer,
+        has_image: bool = False,
+    ) -> Dict:
+        """Build ``input_ids``, ``labels``, and optional ``prompt`` for imgsp (vicuna-style) supervision."""
+        conv = conversation_lib.conv_templates["vicuna"].copy()
+        roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
+
+        conversations = []
+        guided_prompt = []
+        for i, source in enumerate(sources):
+            if roles[source[0]["from"]] != conv.roles[0]:
+                source = source[1:]
+
+            conv.messages = []
+            img_in_text = False
+            for j, sentence in enumerate(source):
+                role = roles[sentence["from"]]
+                assert role == conv.roles[j % 2], f"{i}"
+
+                if role == conv.roles[0]:
+                    guided_sent = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "").replace("\n", "")
+                    guided_prompt.append(guided_sent)
+                if DEFAULT_IMAGE_TOKEN in sentence["value"]:
+                    img_in_text = True
+                if role == conv.roles[0] and img_in_text and DEFAULT_IMAGE_TOKEN not in sentence["value"]:
+                    if random.randint(0, 1) == 0:
+                        img_conv = DEFAULT_IMAGE_TOKEN + "\n" + sentence["value"]
+                    else:
+                        img_conv = sentence["value"] + "\n" + DEFAULT_IMAGE_TOKEN
+                    conv.append_message(role, img_conv)
+                else:
+                    conv.append_message(role, sentence["value"])
+            conversations.append(conv.get_prompt())
+
+        def _lookup_special_token(token: str) -> torch.Tensor:
+            token_id = tokenizer.convert_tokens_to_ids(token)
+            if token_id is None or token_id == tokenizer.unk_token_id:
+                raise ValueError(f"Special token {token!r} is missing from tokenizer vocab.")
+            return torch.tensor([token_id], dtype=torch.long)
+
+        image_start_special_token = _lookup_special_token(IMAGE_START_TOKEN)
+        image_end_special_token = _lookup_special_token(IMAGE_END_TOKEN)
+        video_start_special_token = _lookup_special_token(VIDEO_START_SPECIAL_TOKEN)
+        video_end_special_token = _lookup_special_token(VIDEO_END_SPECIAL_TOKEN)
+        navigation_special_token = _lookup_special_token(NAVIGATION_SPECIAL_TOKEN)
+        image_separator = _lookup_special_token(IMAGE_SEPARATOR)
+
+        if has_image:
+            new_list_all = []
+            for prompt in conversations:
+                is_nav = NAVIGATION_IDENTIFIER in prompt
+                token_prompt = tokenizer_image_token(prompt, tokenizer, return_tensors="pt")
+                indices_to_replace = torch.where(token_prompt == -200)[0]
+                new_list = []
+                while indices_to_replace.numel() > 0:
+                    idx = indices_to_replace[0]
+                    new_list.append(token_prompt[:idx])
+                    new_list.append(video_start_special_token)
+                    new_list.append(image_separator)
+                    new_list.append(token_prompt[idx : idx + 1])
+                    new_list.append(video_end_special_token)
+                    if is_nav:
+                        new_list.append(image_start_special_token)
+                        new_list.append(image_end_special_token)
+                        new_list.append(navigation_special_token)
+                    token_prompt = token_prompt[idx + 1 :]
+                    indices_to_replace = torch.where(token_prompt == -200)[0]
+                if token_prompt.numel() > 0:
+                    new_list.append(token_prompt)
+                new_list_all.append(torch.cat(new_list, dim=0))
+            input_ids = torch.stack(new_list_all, dim=0)
+
+        else:
+            input_ids = tokenizer(
+                conversations,
+                return_tensors="pt",
+                padding="longest",
+                max_length=tokenizer.model_max_length,
+                truncation=True,
+            ).input_ids
+
+        targets = input_ids.clone()
+
+        assert conv.sep_style == conversation_lib.SeparatorStyle.TWO
+
+        sep = conv.sep + conv.roles[1] + ": "
+        for conversation, target in zip(conversations, targets):
+            total_len = int(target.ne(tokenizer.pad_token_id).sum())
+            extra = (6 if NAVIGATION_IDENTIFIER in conversation else 3) if has_image else None
+
+            rounds = conversation.split(conv.sep2)
+            cur_len = 1
+            target[:cur_len] = IGNORE_INDEX
+            for i, rou in enumerate(rounds):
+                if rou == "":
+                    break
+
+                parts = rou.split(sep)
+                if len(parts) != 2:
+                    break
+                parts[0] += sep
+
+                if has_image:
+                    round_len = len(tokenizer_image_token(rou, tokenizer)) + extra
+                    instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) + extra - 2
+                else:
+                    round_len = len(tokenizer(rou).input_ids)
+                    instruction_len = len(tokenizer(parts[0]).input_ids) - 2
+
+                target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
+                cur_len += round_len
+            target[cur_len:] = IGNORE_INDEX
+
+            if cur_len < tokenizer.model_max_length:
+                if cur_len != total_len:
+                    print(
+                        f"WARNING: tokenization mismatch: {cur_len} vs {total_len}. "
+                        f"conversation:{conversation}, video_or_not:True, "
+                        f"identifier:{NAVIGATION_IDENTIFIER in conversation} (ignored)"
+                    )
+        return dict(
+            input_ids=input_ids,
+            labels=targets,
+            prompt=guided_prompt,
+        )
 
 
 class Pi0Tokenization(Tokenization):
