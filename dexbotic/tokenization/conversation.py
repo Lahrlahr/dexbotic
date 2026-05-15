@@ -263,6 +263,7 @@ conv_vicuna = Conversation(
 
 conv_templates = {
     "dexbotic": conv_dexbotic,
+    "cogact": conv_dexbotic,
     "step": conv_step,
     "llama_3": llama_3_chat,
     "qwen2-chat": conv_qwen2,

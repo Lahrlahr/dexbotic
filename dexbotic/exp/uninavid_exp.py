@@ -647,7 +647,7 @@ class UniNaVidExp(BaseExp):
         # Step 5: build trainer
         self.trainer = DexboticUniNaVidTrainer(
             model=self.model,
-            tokenizer=self.tokenizer,
+            processing_class=self.tokenizer,
             exp_config=self,
             train_dataset=train_dataset,
             data_collator=data_collator,

@@ -76,6 +76,23 @@ def process_data_item(
     return data_dict
 
 
+def _tokenizer_encode(
+    tokenizer: transformers.PreTrainedTokenizer,
+    text: str,
+    add_bos: bool = False,
+    add_eos: bool = False,
+) -> list[int]:
+    if hasattr(tokenizer, "sp_model"):
+        return tokenizer.sp_model.encode(text, add_bos=add_bos, add_eos=add_eos)
+
+    token_ids = tokenizer.encode(text, add_special_tokens=False)
+    if add_bos and tokenizer.bos_token_id is not None:
+        token_ids = [tokenizer.bos_token_id] + token_ids
+    if add_eos and tokenizer.eos_token_id is not None:
+        token_ids = token_ids + [tokenizer.eos_token_id]
+    return token_ids
+
+
 class LLMTokenization(Tokenization):
     def __init__(self, tokenizer, data_args):
         self.tokenizer = tokenizer
@@ -306,9 +323,7 @@ class Pi0Tokenization(Tokenization):
     def __call__(self, conversations: List[Dict], **kwargs):
         prompt = conversations[0]["value"]
         cleaned_prompt = prompt.strip().replace("\n", " ").replace("_", " ")
-        tokens = self.tokenizer.sp_model.encode(
-            cleaned_prompt, add_bos=True
-        ) + self.tokenizer.sp_model.encode("\n")
+        tokens = _tokenizer_encode(self.tokenizer, cleaned_prompt, add_bos=True) + _tokenizer_encode(self.tokenizer, "\n")
         tokens = tokens[: self._max_len]
         tokens += [0] * (self._max_len - len(tokens))
         return {"input_ids": np.asarray(tokens), "labels": np.asarray(tokens)}
@@ -335,15 +350,13 @@ class Pi05Tokenization(Tokenization):
 
             if role == "human":
                 text = f"User: {text}\n"
-                tokens = self.tokenizer.sp_model.encode(text, add_bos=True)
+                tokens = _tokenizer_encode(self.tokenizer, text, add_bos=True)
                 labels = [IGNORE_INDEX] * len(tokens)
             else:  # role == "gpt"
                 role_text = "Assistant: "
-                role_tokens = self.tokenizer.sp_model.encode(role_text, add_bos=False)
+                role_tokens = _tokenizer_encode(self.tokenizer, role_text)
                 role_labels = [IGNORE_INDEX] * len(role_tokens)
-                text_tokens = self.tokenizer.sp_model.encode(
-                    text, add_bos=False, add_eos=True
-                )
+                text_tokens = _tokenizer_encode(self.tokenizer, text, add_eos=True)
                 text_labels = text_tokens
                 tokens = role_tokens + text_tokens
                 labels = role_labels + text_labels
